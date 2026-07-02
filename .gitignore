@@ -1,0 +1,20 @@
+# Secrets and Local Configurations
+.env
+service_account.json
+
+# Local database/data files containing personal financial data
+family_budget_data.xlsx
+*.xlsx
+*.xls
+
+# Python and Environment cache/directories
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+.idea/
+.vscode/
