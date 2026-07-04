@@ -405,12 +405,10 @@ with col_u1:
     if st.button("🙋‍♀️ Katja", key="btn_user_katja", use_container_width=True, 
                  type="primary" if st.session_state.current_user == "katja" else "secondary"):
         st.session_state.current_user = "katja"
-        st.rerun()
 with col_u2:
     if st.button("🙋‍♂️ Dirk", key="btn_user_dirk", use_container_width=True, 
                  type="primary" if st.session_state.current_user == "dirk" else "secondary"):
         st.session_state.current_user = "dirk"
-        st.rerun()
 
 current_user = "Katja" if st.session_state.current_user == "katja" else "Dirk"
 user_initial = current_user[0].upper()
