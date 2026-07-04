@@ -1149,7 +1149,8 @@ elif menu == "📊 Auswertungen":
                     
     except Exception as e:
         logger.error(f"Error loading analytics data: {e}", exc_info=True)
-        st.error("❌ Daten konnten nicht geladen werden. Bitte Google Sheets Verbindung prüfen.")
+        friendly_err = get_friendly_error_message(e)
+        st.error(f"❌ Daten konnten nicht geladen werden:\n\n{friendly_err}")
         if st.button("Zu den Einstellungen gehen ⚙️", key="err_go_to_settings"):
             st.session_state.menu_selection = "⚙️ Einstellungen"
             st.rerun()
