@@ -944,7 +944,7 @@ elif menu == "📊 Auswertungen":
                 fig_pie,
                 use_container_width=True,
                 config={
-                    "displayModeBar": True,
+                    "displayModeBar": False,
                     "displaylogo": False,
                     "modeBarButtonsToRemove": [
                         "select2d", "lasso2d", "autoScale2d",
@@ -1077,7 +1077,7 @@ elif menu == "📊 Auswertungen":
                 use_container_width=False,
                 config={
                     "scrollZoom": False,
-                    "displayModeBar": True,
+                    "displayModeBar": False,
                     "displaylogo": False,
                     "modeBarButtonsToRemove": [
                         "select2d", "lasso2d", "autoScale2d",
