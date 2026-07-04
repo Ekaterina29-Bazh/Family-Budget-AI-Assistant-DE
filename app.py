@@ -1130,19 +1130,17 @@ elif menu == "📊 Auswertungen":
                         icon_sym = "●"
                     
                 with cols[idx % 4]:
-                    card_html = f"""
-                    <div style="background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(0, 135, 90, 0.15); border-radius: 16px; padding: 16px; margin-bottom: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.04); min-height: 135px;">
-                        <div title="{cat}" style="font-size: 0.78rem; color: #1f3a29; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; line-height: 1.2; min-height: 2.2rem; display: flex; align-items: center; word-break: break-word;">
-                            {cat}
-                        </div>
-                        <div style="font-size: 1.5rem; font-weight: 800; color: #0b1a11; margin-top: 6px; font-family: 'Outfit', sans-serif;">
-                            {format_currency_de(curr_val)}
-                        </div>
-                        <div style="font-size: 0.8rem; margin-top: 6px; font-weight: 600; color: {delta_color};">
-                            {icon_sym} {delta_text} <br><span style="color: #3b5243;">vs. Vormonat ({format_currency_de(prev_val)})</span>
-                        </div>
-                    </div>
-                    """
+                    card_html = f"""<div style="background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(0, 135, 90, 0.15); border-radius: 16px; padding: 16px; margin-bottom: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.04); min-height: 135px;">
+<div title="{cat}" style="font-size: 0.78rem; color: #1f3a29; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; line-height: 1.2; min-height: 2.2rem; display: flex; align-items: center; word-break: break-word;">
+{cat}
+</div>
+<div style="font-size: 1.5rem; font-weight: 800; color: #0b1a11; margin-top: 6px; font-family: 'Outfit', sans-serif;">
+{format_currency_de(curr_val)}
+</div>
+<div style="font-size: 0.8rem; margin-top: 6px; font-weight: 600; color: {delta_color};">
+{icon_sym} {delta_text} <br><span style="color: #3b5243;">vs. Vormonat ({format_currency_de(prev_val)})</span>
+</div>
+</div>"""
                     st.markdown(card_html, unsafe_allow_html=True)
                     
     except Exception as e:
