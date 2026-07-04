@@ -1308,9 +1308,33 @@ elif menu == "⚙️ Einstellungen":
     with st.expander("Google Sheets API Konfiguration"):
         st.write("Trage deine Service Account Credentials und Spreadsheet ID ein, um das Google Sheet zu aktivieren:")
         
-        spreadsheet_id_val = st.text_input("Spreadsheet ID", value=os.environ.get("SPREADSHEET_ID", ""))
-        service_account_exists = os.path.exists("service_account.json") or "GOOGLE_SERVICE_ACCOUNT_JSON" in os.environ
+        # Check spreadsheet ID from st.secrets or os.environ
+        current_ss_id = ""
+        try:
+            if "SPREADSHEET_ID" in st.secrets:
+                current_ss_id = st.secrets["SPREADSHEET_ID"]
+            elif "SPREDSHEET_ID" in st.secrets:
+                current_ss_id = st.secrets["SPREDSHEET_ID"]
+        except Exception:
+            pass
+        if not current_ss_id:
+            current_ss_id = os.environ.get("SPREADSHEET_ID") or os.environ.get("SPREDSHEET_ID") or ""
+
+        spreadsheet_id_val = st.text_input("Spreadsheet ID", value=current_ss_id)
+        
+        # Check if GOOGLE_SERVICE_ACCOUNT_JSON is in st.secrets or os.environ
+        has_cloud_secret = False
+        try:
+            if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
+                has_cloud_secret = True
+        except Exception:
+            pass
         if "GOOGLE_SERVICE_ACCOUNT_JSON" in os.environ:
+            has_cloud_secret = True
+
+        service_account_exists = os.path.exists("service_account.json") or has_cloud_secret
+        
+        if has_cloud_secret:
             st.write("Google Sheets Verbindung: ✅ Aktiv (Cloud Secret geladen)")
         else:
             st.write(f"Google Sheets Verbindung: {'✅ Service-Account-Datei geladen' if service_account_exists else '❌ Keine Service-Account-Datei (service_account.json) vorhanden'}")

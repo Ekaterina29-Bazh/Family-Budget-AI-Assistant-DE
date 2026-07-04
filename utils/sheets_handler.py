@@ -43,7 +43,20 @@ def format_person(p_val) -> str:
 
 class SheetsHandler:
     def __init__(self):
-        raw_id = os.environ.get("SPREADSHEET_ID") or os.environ.get("SPREDSHEET_ID")
+        raw_id = None
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets"):
+                if "SPREADSHEET_ID" in st.secrets:
+                    raw_id = st.secrets["SPREADSHEET_ID"]
+                elif "SPREDSHEET_ID" in st.secrets:
+                    raw_id = st.secrets["SPREDSHEET_ID"]
+        except Exception:
+            pass
+
+        if not raw_id:
+            raw_id = os.environ.get("SPREADSHEET_ID") or os.environ.get("SPREDSHEET_ID")
+
         self.spreadsheet_id = None
         if raw_id:
             raw_id = raw_id.strip()
@@ -61,8 +74,17 @@ class SheetsHandler:
         self.use_google = False
         self.service = None
 
-        # Check environment variable for service account JSON content first (useful for cloud deployments)
-        creds_json_str = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        # Check Streamlit secrets first, then environment variable for service account JSON content
+        creds_json_str = None
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets") and "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
+                creds_json_str = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+        except Exception:
+            pass
+
+        if not creds_json_str:
+            creds_json_str = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
         if self.spreadsheet_id:
             scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -74,7 +96,7 @@ class SheetsHandler:
                     creds = service_account.Credentials.from_service_account_info(
                         creds_info, scopes=scopes
                     )
-                    logger.info("Successfully loaded service account credentials from environment variable.")
+                    logger.info("Successfully loaded service account credentials from cloud/environment secret.")
                 elif os.path.exists(self.creds_path):
                     creds = service_account.Credentials.from_service_account_file(
                         self.creds_path, scopes=scopes

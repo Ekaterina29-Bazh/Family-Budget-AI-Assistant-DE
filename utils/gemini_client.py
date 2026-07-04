@@ -43,11 +43,29 @@ def _parse_retry_delay(err_str: str) -> float:
 
 class GeminiClient:
     def __init__(self):
-        self.api_key = os.environ.get("GEMINI_API_KEY")
-        self.model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        self.api_key = None
+        self.model_name = None
+        
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets"):
+                if "GEMINI_API_KEY" in st.secrets:
+                    self.api_key = st.secrets["GEMINI_API_KEY"]
+                elif "GOOGLE_API_KEY" in st.secrets:
+                    self.api_key = st.secrets["GOOGLE_API_KEY"]
+                
+                if "GEMINI_MODEL" in st.secrets:
+                    self.model_name = st.secrets["GEMINI_MODEL"]
+        except Exception:
+            pass
+
+        if not self.api_key:
+            self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not self.model_name:
+            self.model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
         
         if not self.api_key:
-            logger.warning("GEMINI_API_KEY / GOOGLE_API_KEY not found in environment!")
+            logger.warning("GEMINI_API_KEY / GOOGLE_API_KEY not found in secrets or environment!")
             
         try:
             # Initialize the official google-genai Client
