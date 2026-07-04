@@ -73,6 +73,7 @@ class SheetsHandler:
         self.creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
         self.use_google = False
         self.service = None
+        self.connection_error = None
 
         # Check Streamlit secrets first, then environment variable for service account JSON content
         creds_json_str = None
@@ -108,11 +109,14 @@ class SheetsHandler:
                     self.use_google = True
                     logger.info("Successfully connected to Google Sheets API.")
                 else:
+                    self.connection_error = "Keine Google-Zugangsdaten (service_account.json / GOOGLE_SERVICE_ACCOUNT_JSON) gefunden."
                     logger.info("Using local Excel file fallback (no Google Sheets credentials found).")
             except Exception as e:
+                self.connection_error = f"Verbindungsfehler: {str(e)}"
                 logger.error(f"Google Sheets connection failed, falling back to local Excel: {e}")
                 self.use_google = False
         else:
+            self.connection_error = "Keine Spreadsheet-ID konfiguriert (SPREADSHEET_ID fehlt)."
             logger.info("Using local Excel file fallback (no Google Sheets spreadsheet ID configured).")
 
     def _invalidate_cache(self):

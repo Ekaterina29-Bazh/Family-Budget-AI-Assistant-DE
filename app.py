@@ -466,6 +466,14 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# Show detailed fallback reason in sidebar if sheets connection was unsuccessful
+if not sheets_handler.use_google and getattr(sheets_handler, "connection_error", None):
+    st.sidebar.markdown(f"""
+    <div style='font-size: 9.5px; color: #EF5350; padding-left: 10px; margin-top: -4px; line-height: 1.2;'>
+        ⚠️ {sheets_handler.connection_error}
+    </div>
+    """, unsafe_allow_html=True)
+
 # --- Content Sections ---
 
 if menu == "💬 Chat Assistent":
