@@ -394,10 +394,27 @@ st.sidebar.markdown("""
 st.sidebar.markdown("<hr style='border:none; border-top:1px solid rgba(255,255,255,0.08); margin:14px 0;'>", unsafe_allow_html=True)
 
 st.sidebar.markdown("<p style='font-size:11px; color:#5C7F67; letter-spacing:0.12em; font-weight:700; margin-bottom:6px; text-transform:uppercase;'>KONTO</p>", unsafe_allow_html=True)
-current_user = st.sidebar.selectbox("KONTO", ["Katja", "Dirk"], label_visibility="collapsed")
-st.session_state.current_user = current_user.lower()
 
+# Initialize current_user in session state if not present
+if "current_user" not in st.session_state:
+    st.session_state.current_user = "katja"
+
+# Render two togglable buttons side-by-side instead of a selectbox dropdown
+col_u1, col_u2 = st.sidebar.columns(2)
+with col_u1:
+    if st.button("🙋‍♀️ Katja", key="btn_user_katja", use_container_width=True, 
+                 type="primary" if st.session_state.current_user == "katja" else "secondary"):
+        st.session_state.current_user = "katja"
+        st.rerun()
+with col_u2:
+    if st.button("🙋‍♂️ Dirk", key="btn_user_dirk", use_container_width=True, 
+                 type="primary" if st.session_state.current_user == "dirk" else "secondary"):
+        st.session_state.current_user = "dirk"
+        st.rerun()
+
+current_user = "Katja" if st.session_state.current_user == "katja" else "Dirk"
 user_initial = current_user[0].upper()
+
 st.sidebar.markdown(f"""
 <div style='background: rgba(255, 255, 255, 0.04); border-radius: 10px; padding: 8px 12px; display: flex; align-items: center; gap: 12px; margin-bottom: 6px;'>
     <div style='background: #00E676; color: #041F10; width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-family: "Outfit", sans-serif; font-size: 0.95rem;'>
