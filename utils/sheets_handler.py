@@ -94,6 +94,9 @@ class SheetsHandler:
                 if creds_json_str:
                     import json
                     creds_info = json.loads(creds_json_str)
+                    if "private_key" in creds_info:
+                        # Auto-correct double-escaped newlines that often happen during copy-paste/TOML formatting
+                        creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
                     creds = service_account.Credentials.from_service_account_info(
                         creds_info, scopes=scopes
                     )
