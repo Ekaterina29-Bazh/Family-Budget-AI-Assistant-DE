@@ -243,19 +243,21 @@ st.markdown("""
         transform: translateY(1px) !important;
     }
     
-    /* Style Chat Input Box */
-    .stTextInput input {
+    /* Style Chat Input Box & Textareas for dark text on white bg (fixing mobile dark mode issues) */
+    .stTextInput input, .stTextArea textarea {
         background-color: rgba(255, 255, 255, 0.8) !important;
+        color: #0b1a11 !important;
         border: 1px solid rgba(0, 135, 90, 0.12) !important;
         border-radius: 12px !important;
         padding: 12px !important;
         font-family: 'Inter', sans-serif !important;
         transition: all 0.2s ease !important;
     }
-    .stTextInput input:focus {
+    .stTextInput input:focus, .stTextArea textarea:focus {
         border-color: #00875A !important;
         box-shadow: 0 0 0 2px rgba(0, 135, 90, 0.15) !important;
         background-color: #ffffff !important;
+        color: #0b1a11 !important;
     }
 
     /* Hide Streamlit form helper text (Press Enter to submit form) */
