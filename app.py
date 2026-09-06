@@ -391,8 +391,7 @@ is_sheet_accessible = False
 sheet_error_detail = None
 if sheets_handler.use_google:
     try:
-        sheets_handler.service.spreadsheets().get(spreadsheetId=sheets_handler.spreadsheet_id).execute()
-        is_sheet_accessible = True
+        is_sheet_accessible = sheets_handler.is_sheet_accessible()
     except Exception as e:
         sheet_error_detail = str(e)
         is_sheet_accessible = False

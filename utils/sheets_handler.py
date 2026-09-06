@@ -2,6 +2,7 @@
 
 import os
 import logging
+import time
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
@@ -19,12 +20,11 @@ logger = logging.getLogger(__name__)
 LOCAL_FILE = "family_budget_data.xlsx"
 HEADERS = ["Datum", "Händler", "Betrag", "Kategorie", "Unterkategorie", "Quelle", "Person", "Typ", "Notiz"]
 
-import time
 
 def get_friendly_error_message(e: Exception) -> str:
     err_str = str(e)
     if "429" in err_str or "RATE_LIMIT_EXCEEDED" in err_str or "quota" in err_str.lower():
-        return "Das Schreiblimit (Quota 429) der Google Sheets API wurde vorübergehend überschritten. Die App speichert Buchungen jetzt paketweise (Batch) und wiederholt Anfragen automatisch. Bitte warte kurz ein paar Sekunden und versuche es erneut."
+        return "Das Schreiblimit (Quota 429) der Google Sheets API wurde vorübergehend überschritten. Bitte warte ca. 30-60 Sekunden, bis Google das Limit zurücksetzt, und klicke dann erneut."
     elif "must not be an Office file" in err_str or "Office file" in err_str:
         return "Die Google-Tabelle ist im Office-Format (.xlsx) gespeichert. Bitte konvertiere sie in eine native Google Tabelle (gehe in Google Drive, öffne die Datei in Google Sheets, klicke auf **Datei -> Als Google Tabelle speichern**) und trage die neue Spreadsheet-ID in deine Einstellungen ein."
     elif "403" in err_str or "PERMISSION_DENIED" in err_str:
@@ -33,7 +33,8 @@ def get_friendly_error_message(e: Exception) -> str:
         return "Die Google-Tabelle wurde nicht gefunden. Bitte überprüfe die Spreadsheet-ID in den Einstellungen."
     return f"Fehler bei der Google Sheets Verbindung: {err_str}"
 
-def _exec_with_retry(api_call, max_retries=4, default_backoff=3.0):
+
+def _exec_with_retry(api_call, max_retries=5, default_backoff=3.0):
     """Executes a Google API call with automatic retries on 429 Rate Limit / Quota Exceeded errors."""
     for attempt in range(max_retries):
         try:
@@ -54,6 +55,7 @@ def _exec_with_retry(api_call, max_retries=4, default_backoff=3.0):
                 time.sleep(wait_time)
             else:
                 raise e
+
 
 def format_person(p_val) -> str:
     if not p_val:
@@ -121,7 +123,7 @@ class SheetsHandler:
                     import json
                     creds_info = json.loads(creds_json_str)
                     if "private_key" in creds_info:
-                        # Auto-correct double-escaped newlines that often happen during copy-paste/TOML formatting
+                        # Auto-correct double-escaped newlines
                         creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
                     creds = service_account.Credentials.from_service_account_info(
                         creds_info, scopes=scopes
@@ -148,6 +150,19 @@ class SheetsHandler:
             self.connection_error = "Keine Spreadsheet-ID konfiguriert (SPREADSHEET_ID fehlt)."
             logger.info("Using local Excel file fallback (no Google Sheets spreadsheet ID configured).")
 
+    def _execute_api(self, api_call):
+        """Helper to execute any Google Sheets API call with 429 retry backoff."""
+        return _exec_with_retry(api_call)
+
+    def is_sheet_accessible(self) -> bool:
+        if not self.use_google:
+            return True
+        try:
+            self._execute_api(lambda: self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute())
+            return True
+        except Exception:
+            return False
+
     def _invalidate_cache(self):
         try:
             import streamlit as st
@@ -162,7 +177,6 @@ class SheetsHandler:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             return dt.strftime('%m.%Y')
         except Exception:
-            # Fallback to current month if parsing fails
             return datetime.now().strftime('%m.%Y')
 
     # --- LOCAL EXCEL METHODS ---
@@ -170,24 +184,19 @@ class SheetsHandler:
     def _init_local_sheet(self, sheet_name: str) -> str:
         """Ensure local Excel exists and has the requested sheet name. Returns exact sheet title."""
         if not os.path.exists(LOCAL_FILE):
-            # Create a new workbook with headers
             with pd.ExcelWriter(LOCAL_FILE, engine="openpyxl") as writer:
                 df = pd.DataFrame(columns=HEADERS)
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
-                # Create empty Analytics sheet
                 df_analytics = pd.DataFrame(columns=["Bereich", "Metrik", "Wert"])
                 df_analytics.to_excel(writer, sheet_name="Analytics", index=False)
             return sheet_name
 
-        # Check if sheet exists
         xls = pd.ExcelFile(LOCAL_FILE)
         existing_sheet = next((s for s in xls.sheet_names if s.lower() == sheet_name.lower()), None)
         if not existing_sheet:
-            # Load existing sheets and append the new sheet
             sheets = {}
             for name in xls.sheet_names:
                 sheets[name] = pd.read_excel(xls, name)
-            
             sheets[sheet_name] = pd.DataFrame(columns=HEADERS)
             
             with pd.ExcelWriter(LOCAL_FILE, engine="openpyxl") as writer:
@@ -227,10 +236,9 @@ class SheetsHandler:
             return sheet_name
         
         try:
-            spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+            spreadsheet = self._execute_api(lambda: self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute())
             sheet_names = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
             
-            # Create monthly tab if not exists
             existing_sheet = next((s for s in sheet_names if s.lower() == sheet_name.lower()), None)
             if not existing_sheet:
                 body = {
@@ -244,17 +252,17 @@ class SheetsHandler:
                         }
                     ]
                 }
-                self.service.spreadsheets().batchUpdate(
+                self._execute_api(lambda: self.service.spreadsheets().batchUpdate(
                     spreadsheetId=self.spreadsheet_id, body=body
-                ).execute()
+                ).execute())
                 
                 # Write headers
-                self.service.spreadsheets().values().update(
+                self._execute_api(lambda: self.service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A1:I1",
                     valueInputOption="USER_ENTERED",
                     body={"values": [HEADERS]}
-                ).execute()
+                ).execute())
                 target_sheet = sheet_name
             else:
                 target_sheet = existing_sheet
@@ -264,20 +272,20 @@ class SheetsHandler:
                 body = {
                     "requests": [{"addSheet": {"properties": {"title": "Analytics"}}}]
                 }
-                self.service.spreadsheets().batchUpdate(
+                self._execute_api(lambda: self.service.spreadsheets().batchUpdate(
                     spreadsheetId=self.spreadsheet_id, body=body
-                ).execute()
+                ).execute())
                 
-                self.service.spreadsheets().values().update(
+                self._execute_api(lambda: self.service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
                     range="'Analytics'!A1:C1",
                     valueInputOption="USER_ENTERED",
                     body={"values": [["Bereich", "Metrik", "Wert"]]}
-                ).execute()
+                ).execute())
                 
             return target_sheet
                         
-        except HttpError as err:
+        except Exception as err:
             logger.error(f"Google API error in _init_google_sheet: {err}")
             raise err
 
@@ -286,7 +294,7 @@ class SheetsHandler:
         if not self.use_google:
             return sheet_name
         try:
-            spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+            spreadsheet = self._execute_api(lambda: self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute())
             sheet_names = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
             
             existing_sheet = next((s for s in sheet_names if s.lower() == sheet_name.lower()), None)
@@ -294,21 +302,21 @@ class SheetsHandler:
                 body = {
                     "requests": [{"addSheet": {"properties": {"title": sheet_name}}}]
                 }
-                self.service.spreadsheets().batchUpdate(
+                self._execute_api(lambda: self.service.spreadsheets().batchUpdate(
                     spreadsheetId=self.spreadsheet_id, body=body
-                ).execute()
+                ).execute())
                 
                 # Write headers
-                self.service.spreadsheets().values().update(
+                self._execute_api(lambda: self.service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A1:{chr(65 + len(headers) - 1)}1",
                     valueInputOption="USER_ENTERED",
                     body={"values": [headers]}
-                ).execute()
+                ).execute())
                 return sheet_name
             else:
                 return existing_sheet
-        except HttpError as err:
+        except Exception as err:
             logger.error(f"Google API error in _init_new_google_sheet: {err}")
             raise err
 
@@ -345,7 +353,7 @@ class SheetsHandler:
         if tx_type not in ["expense", "income", "savings"]:
             tx_type = "expense"
             
-        month_str = date_val[:7] # YYYY-MM
+        month_str = date_val[:7]
         person_val = format_person(transaction.get("person"))
 
         if tx_type == "income":
@@ -375,8 +383,7 @@ class SheetsHandler:
         if self.use_google:
             try:
                 sheet_name = self._init_new_google_sheet(sheet_name, headers)
-                # Append row with retry on rate limit 429
-                _exec_with_retry(lambda: self.service.spreadsheets().values().append(
+                self._execute_api(lambda: self.service.spreadsheets().values().append(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A:I",
                     valueInputOption="USER_ENTERED",
@@ -399,7 +406,6 @@ class SheetsHandler:
         new_row = pd.DataFrame([row_data], columns=headers)
         df = pd.concat([df, new_row], ignore_index=True)
         
-        # Write back all sheets
         xls = pd.ExcelFile(LOCAL_FILE)
         sheets = {}
         for name in xls.sheet_names:
@@ -463,7 +469,7 @@ class SheetsHandler:
             try:
                 for sheet_name, rows in batch_by_sheet.items():
                     target_sheet = self._init_new_google_sheet(sheet_name, headers)
-                    _exec_with_retry(lambda s_name=target_sheet, r_rows=rows: self.service.spreadsheets().values().append(
+                    self._execute_api(lambda s_name=target_sheet, r_rows=rows: self.service.spreadsheets().values().append(
                         spreadsheetId=self.spreadsheet_id,
                         range=f"'{s_name}'!A:I",
                         valueInputOption="USER_ENTERED",
@@ -526,8 +532,6 @@ class SheetsHandler:
         new_exp_sheet = next((s for s in sheet_names if s.lower() == f"{month_yyyy_mm} expenses"), None)
         
         if new_exp_sheet:
-            # We read from new format!
-            # New format has: YYYY-MM expenses, YYYY-MM income, YYYY-MM savings
             new_inc_sheet = next((s for s in sheet_names if s.lower() == f"{month_yyyy_mm} income"), None)
             new_sav_sheet = next((s for s in sheet_names if s.lower() == f"{month_yyyy_mm} savings"), None)
             
@@ -594,7 +598,6 @@ class SheetsHandler:
             if not mapped_rows:
                 return pd.DataFrame(columns=HEADERS)
             df = pd.DataFrame(mapped_rows, columns=HEADERS)
-            # Ensure correct types in headers
             for col in HEADERS:
                 if col not in df.columns:
                     df[col] = ""
@@ -606,10 +609,10 @@ class SheetsHandler:
         if self.use_google:
             try:
                 self._init_google_sheet(sheet_name)
-                result = self.service.spreadsheets().values().get(
+                result = self._execute_api(lambda: self.service.spreadsheets().values().get(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A:Z"
-                ).execute()
+                ).execute())
                 rows = result.get("values", [])
                 
                 if not rows:
@@ -842,10 +845,10 @@ class SheetsHandler:
                 else:
                     self._init_google_sheet(sheet_name)
                     
-                result = self.service.spreadsheets().values().get(
+                result = self._execute_api(lambda: self.service.spreadsheets().values().get(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A:I"
-                ).execute()
+                ).execute())
                 rows = result.get("values", [])
                 if not rows or len(rows) <= 1:
                     return False
@@ -867,25 +870,22 @@ class SheetsHandler:
                 updated = False
                 for idx, row in enumerate(rows[1:], start=2): # 1-based, index 1 is header
                     if len(row) > max(date_idx, merchant_idx, amount_idx):
-                        # Clean values for matching
                         row_date = row[date_idx].strip()
                         row_merchant = row[merchant_idx].strip().lower()
                         try:
-                            # Normalize commas/dots in amounts
                             row_amt_str = row[amount_idx].replace(",", ".").strip()
                             row_amount = float(row_amt_str)
                         except ValueError:
                             continue
                         
                         if row_date == date_str and merchant.lower() in row_merchant and abs(row_amount - amount) < 0.01:
-                            # Update Category cell
                             cell_range = f"'{sheet_name}'!{chr(65 + cat_idx)}{idx}"
-                            self.service.spreadsheets().values().update(
+                            self._execute_api(lambda: self.service.spreadsheets().values().update(
                                 spreadsheetId=self.spreadsheet_id,
                                 range=cell_range,
                                 valueInputOption="USER_ENTERED",
                                 body={"values": [[new_category]]}
-                            ).execute()
+                            ).execute())
                             updated = True
                             break
                 if updated:
@@ -927,7 +927,6 @@ class SheetsHandler:
         if len(matched_indices) > 0:
             df.loc[matched_indices[0], cat_col] = new_category
             
-            # Write back all sheets
             xls = pd.ExcelFile(LOCAL_FILE)
             sheets = {}
             for name in xls.sheet_names:
@@ -947,24 +946,22 @@ class SheetsHandler:
         """Write processed analytics summary to the Analytics tab."""
         if self.use_google:
             try:
-                # Clear and write new analytics
-                self.service.spreadsheets().values().clear(
+                self._execute_api(lambda: self.service.spreadsheets().values().clear(
                     spreadsheetId=self.spreadsheet_id,
                     range="'Analytics'!A1:C100"
-                ).execute()
+                ).execute())
                 
-                self.service.spreadsheets().values().update(
+                self._execute_api(lambda: self.service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
                     range="'Analytics'!A1",
                     valueInputOption="USER_ENTERED",
                     body={"values": [["Bereich", "Metrik", "Wert"]] + summary_rows}
-                ).execute()
+                ).execute())
                 return True
             except Exception as e:
                 logger.error(f"Google API error writing analytics: {e}")
                 raise e
                 
-        # Local Excel
         df = pd.DataFrame(summary_rows, columns=["Bereich", "Metrik", "Wert"])
         xls = pd.ExcelFile(LOCAL_FILE)
         sheets = {}
@@ -983,12 +980,11 @@ class SheetsHandler:
         """Returns a list of all sheet names in the spreadsheet."""
         if self.use_google:
             try:
-                spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+                spreadsheet = self._execute_api(lambda: self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute())
                 return [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
             except Exception as e:
                 logger.error(f"Google API error in get_all_sheet_names: {e}")
                 raise e
-        # Local Excel
         if not os.path.exists(LOCAL_FILE):
             return []
         xls = pd.ExcelFile(LOCAL_FILE)
@@ -998,10 +994,10 @@ class SheetsHandler:
         """Reads raw data from a sheet directly and returns as a DataFrame."""
         if self.use_google:
             try:
-                result = self.service.spreadsheets().values().get(
+                result = self._execute_api(lambda: self.service.spreadsheets().values().get(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A:Z"
-                ).execute()
+                ).execute())
                 rows = result.get("values", [])
                 if not rows:
                     return pd.DataFrame()
@@ -1020,7 +1016,6 @@ class SheetsHandler:
                 logger.error(f"Google API error in read_sheet_data for {sheet_name}: {e}")
                 return pd.DataFrame()
         
-        # Local Excel
         if not os.path.exists(LOCAL_FILE):
             return pd.DataFrame()
         xls = pd.ExcelFile(LOCAL_FILE)
@@ -1037,7 +1032,7 @@ class SheetsHandler:
         if not self.use_google:
             return
         try:
-            spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+            spreadsheet = self._execute_api(lambda: self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute())
             sheet_names = [s["properties"]["title"] for s in spreadsheet.get("sheets", [])]
             
             exists = any(s.lower() == "analytics" for s in sheet_names)
@@ -1045,9 +1040,9 @@ class SheetsHandler:
                 body = {
                     "requests": [{"addSheet": {"properties": {"title": "analytics"}}}]
                 }
-                self.service.spreadsheets().batchUpdate(
+                self._execute_api(lambda: self.service.spreadsheets().batchUpdate(
                     spreadsheetId=self.spreadsheet_id, body=body
-                ).execute()
+                ).execute())
         except HttpError as err:
             logger.error(f"Google API error in _init_analytics_sheet: {err}")
             raise err
@@ -1060,25 +1055,23 @@ class SheetsHandler:
                 sheet_names = self.get_all_sheet_names()
                 actual_name = next((s for s in sheet_names if s.lower() == "analytics"), "analytics")
                 
-                # Clear and write new analytics
-                self.service.spreadsheets().values().clear(
+                self._execute_api(lambda: self.service.spreadsheets().values().clear(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{actual_name}'!A1:Z1000"
-                ).execute()
+                ).execute())
                 
                 if rows:
-                    self.service.spreadsheets().values().update(
+                    self._execute_api(lambda: self.service.spreadsheets().values().update(
                         spreadsheetId=self.spreadsheet_id,
                         range=f"'{actual_name}'!A1",
                         valueInputOption="USER_ENTERED",
                         body={"values": rows}
-                    ).execute()
+                    ).execute())
                 return True
             except Exception as e:
                 logger.error(f"Google API error writing to analytics tab: {e}")
                 raise e
                 
-        # Local Excel
         if not rows:
             df = pd.DataFrame()
         else:
@@ -1150,24 +1143,23 @@ class SheetsHandler:
         if self.use_google:
             try:
                 actual_name = self._init_new_google_sheet("settings", headers)
-                self.service.spreadsheets().values().clear(
+                self._execute_api(lambda: self.service.spreadsheets().values().clear(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{actual_name}'!A1:Z1000"
-                ).execute()
+                ).execute())
                 
-                # Convert values to clean serializable types
                 clean_values = []
                 for row in df.values.tolist():
                     clean_row = [str(item) if not pd.isna(item) else "" for item in row]
                     clean_values.append(clean_row)
                     
                 rows = [headers] + clean_values
-                self.service.spreadsheets().values().update(
+                self._execute_api(lambda: self.service.spreadsheets().values().update(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{actual_name}'!A1",
                     valueInputOption="USER_ENTERED",
                     body={"values": rows}
-                ).execute()
+                ).execute())
                 self._invalidate_cache()
                 return True
             except Exception as e:
