@@ -19,15 +19,41 @@ logger = logging.getLogger(__name__)
 LOCAL_FILE = "family_budget_data.xlsx"
 HEADERS = ["Datum", "Händler", "Betrag", "Kategorie", "Unterkategorie", "Quelle", "Person", "Typ", "Notiz"]
 
+import time
+
 def get_friendly_error_message(e: Exception) -> str:
     err_str = str(e)
-    if "must not be an Office file" in err_str or "Office file" in err_str:
+    if "429" in err_str or "RATE_LIMIT_EXCEEDED" in err_str or "quota" in err_str.lower():
+        return "Das Schreiblimit (Quota 429) der Google Sheets API wurde vorübergehend überschritten. Die App speichert Buchungen jetzt paketweise (Batch) und wiederholt Anfragen automatisch. Bitte warte kurz ein paar Sekunden und versuche es erneut."
+    elif "must not be an Office file" in err_str or "Office file" in err_str:
         return "Die Google-Tabelle ist im Office-Format (.xlsx) gespeichert. Bitte konvertiere sie in eine native Google Tabelle (gehe in Google Drive, öffne die Datei in Google Sheets, klicke auf **Datei -> Als Google Tabelle speichern**) und trage die neue Spreadsheet-ID in deine Einstellungen ein."
     elif "403" in err_str or "PERMISSION_DENIED" in err_str:
         return "Zugriff verweigert (403). Bitte stelle sicher, dass du die Google-Tabelle für die E-Mail-Adresse des Service Accounts freigegeben hast (mit Schreibrechten)."
     elif "404" in err_str or "NOT_FOUND" in err_str:
         return "Die Google-Tabelle wurde nicht gefunden. Bitte überprüfe die Spreadsheet-ID in den Einstellungen."
     return f"Fehler bei der Google Sheets Verbindung: {err_str}"
+
+def _exec_with_retry(api_call, max_retries=4, default_backoff=3.0):
+    """Executes a Google API call with automatic retries on 429 Rate Limit / Quota Exceeded errors."""
+    for attempt in range(max_retries):
+        try:
+            return api_call()
+        except HttpError as err:
+            err_str = str(err)
+            if ("429" in err_str or "RATE_LIMIT_EXCEEDED" in err_str or "quota" in err_str.lower()) and attempt < max_retries - 1:
+                wait_time = default_backoff * (2 ** attempt) + 1.5
+                logger.warning(f"Google Sheets API 429 rate limit hit. Waiting {wait_time:.1f}s before retry (attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                raise err
+        except Exception as e:
+            err_str = str(e)
+            if ("429" in err_str or "RATE_LIMIT_EXCEEDED" in err_str or "quota" in err_str.lower()) and attempt < max_retries - 1:
+                wait_time = default_backoff * (2 ** attempt) + 1.5
+                logger.warning(f"Google Sheets API rate limited. Waiting {wait_time:.1f}s before retry (attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                raise e
 
 def format_person(p_val) -> str:
     if not p_val:
@@ -349,14 +375,14 @@ class SheetsHandler:
         if self.use_google:
             try:
                 sheet_name = self._init_new_google_sheet(sheet_name, headers)
-                # Append row
-                self.service.spreadsheets().values().append(
+                # Append row with retry on rate limit 429
+                _exec_with_retry(lambda: self.service.spreadsheets().values().append(
                     spreadsheetId=self.spreadsheet_id,
                     range=f"'{sheet_name}'!A:I",
                     valueInputOption="USER_ENTERED",
                     insertDataOption="INSERT_ROWS",
                     body={"values": [row_data]}
-                ).execute()
+                ).execute())
                 self._invalidate_cache()
                 return True
             except Exception as e:
@@ -386,6 +412,93 @@ class SheetsHandler:
             for name, d in sheets.items():
                 header = False if name.lower() == "analytics" else True
                 d.to_excel(writer, sheet_name=name, index=False, header=header)
+        self._invalidate_cache()
+        return True
+
+    def add_transactions_batch(self, transactions: list[dict]) -> bool:
+        """Add multiple transactions in batch mode, grouping by sheet and reducing API calls dramatically."""
+        if not transactions:
+            return True
+
+        batch_by_sheet = {}
+        headers = HEADERS
+
+        for transaction in transactions:
+            date_val = transaction.get("date", datetime.now().strftime("%Y-%m-%d"))
+            tx_type = transaction.get("type", "expense").lower()
+            if tx_type not in ["expense", "income", "savings"]:
+                tx_type = "expense"
+                
+            month_str = date_val[:7]
+            person_val = format_person(transaction.get("person"))
+
+            if tx_type == "income":
+                sheet_name = f"{month_str} income"
+            elif tx_type == "savings":
+                sheet_name = f"{month_str} savings"
+            else:
+                sheet_name = f"{month_str} expenses"
+
+            merchant_val = transaction.get("merchant", "")
+            if not merchant_val and tx_type in ["income", "savings"]:
+                merchant_val = person_val
+                
+            row_data = [
+                date_val,
+                merchant_val,
+                float(transaction.get("amount", 0.0)),
+                transaction.get("category", ""),
+                transaction.get("subcategory", "-"),
+                transaction.get("source", "pdf"),
+                person_val,
+                tx_type,
+                transaction.get("note", "")
+            ]
+
+            if sheet_name not in batch_by_sheet:
+                batch_by_sheet[sheet_name] = []
+            batch_by_sheet[sheet_name].append(row_data)
+
+        if self.use_google:
+            try:
+                for sheet_name, rows in batch_by_sheet.items():
+                    target_sheet = self._init_new_google_sheet(sheet_name, headers)
+                    _exec_with_retry(lambda s_name=target_sheet, r_rows=rows: self.service.spreadsheets().values().append(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f"'{s_name}'!A:I",
+                        valueInputOption="USER_ENTERED",
+                        insertDataOption="INSERT_ROWS",
+                        body={"values": r_rows}
+                    ).execute())
+                self._invalidate_cache()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to batch write to Google Sheets: {e}.")
+                raise e
+
+        # Local Excel fallback
+        for sheet_name, rows in batch_by_sheet.items():
+            actual_sheet = self._init_new_local_sheet(sheet_name, headers)
+            try:
+                df = pd.read_excel(LOCAL_FILE, sheet_name=actual_sheet)
+            except Exception:
+                df = pd.DataFrame(columns=headers)
+            new_rows = pd.DataFrame(rows, columns=headers)
+            df = pd.concat([df, new_rows], ignore_index=True)
+
+            xls = pd.ExcelFile(LOCAL_FILE)
+            sheets = {}
+            for name in xls.sheet_names:
+                if name == actual_sheet:
+                    sheets[name] = df
+                else:
+                    sheets[name] = pd.read_excel(xls, name)
+
+            with pd.ExcelWriter(LOCAL_FILE, engine="openpyxl") as writer:
+                for name, d in sheets.items():
+                    header = False if name.lower() == "analytics" else True
+                    d.to_excel(writer, sheet_name=name, index=False, header=header)
+
         self._invalidate_cache()
         return True
 

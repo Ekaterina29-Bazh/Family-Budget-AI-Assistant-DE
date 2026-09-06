@@ -1314,14 +1314,8 @@ elif menu == "📄 Dokumenten-Upload":
             if st.button("In Sheets speichern", type="primary", width="stretch"):
                 with st.spinner("Speichere Buchungen..."):
                     try:
-                        saved_count = 0
-                        for tx in updated_txs:
-                            # Write to sheets
-                            success = sheets_handler.add_transaction(tx)
-                            if success:
-                                saved_count += 1
-                        
-                        st.success(f"Erfolgreich {saved_count} von {len(updated_txs)} Buchungen eingetragen!")
+                        sheets_handler.add_transactions_batch(updated_txs)
+                        st.success(f"Erfolgreich {len(updated_txs)} Buchungen eingetragen!")
                         st.session_state.pending_pdf_txs = []
                         st.rerun()
                     except Exception as err:
