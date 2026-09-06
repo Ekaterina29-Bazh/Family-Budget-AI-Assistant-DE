@@ -102,6 +102,9 @@ st.markdown("""
         border: none !important;
         padding: 0 !important;
     }
+    div[data-testid="stRadio"] input[type="radio"] {
+        display: none !important;
+    }
     div[data-testid="stRadio"] label {
         background: transparent !important;
         border: none !important;
@@ -118,8 +121,19 @@ st.markdown("""
         align-items: center !important;
         width: 100% !important;
     }
+    div[data-testid="stRadio"] label p,
+    div[data-testid="stRadio"] label span {
+        color: #d0e5d5 !important;
+        font-family: 'Inter', sans-serif !important;
+        font-weight: 500 !important;
+        font-size: 0.95rem !important;
+        margin: 0 !important;
+    }
     div[data-testid="stRadio"] label:hover {
         background: rgba(255, 255, 255, 0.05) !important;
+    }
+    div[data-testid="stRadio"] label:hover p,
+    div[data-testid="stRadio"] label:hover span {
         color: #ffffff !important;
     }
     div[data-testid="stRadio"] label:has(input:checked) {
@@ -127,12 +141,11 @@ st.markdown("""
         border: none !important;
         box-shadow: 0 4px 15px rgba(0, 230, 118, 0.25) !important;
     }
+    div[data-testid="stRadio"] label:has(input:checked) p,
+    div[data-testid="stRadio"] label:has(input:checked) span,
     div[data-testid="stRadio"] label:has(input:checked) * {
         color: #041F10 !important;
         font-weight: 700 !important;
-    }
-    div[data-testid="stRadio"] label > div:first-of-type {
-        display: none !important;
     }
     div[data-testid="stRadio"] label div[data-testid="stMarkdownContainer"] {
         padding-left: 0 !important;
