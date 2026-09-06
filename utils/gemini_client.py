@@ -21,23 +21,29 @@ os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "False")
 
 logger = logging.getLogger(__name__)
 
-# Retry settings for free-tier quota (20 req/min)
-MAX_RETRIES = 4
-DEFAULT_BACKOFF_SECONDS = 12.0  # Fallback if we can't parse the server's suggested delay
+# Retry settings for rate limits and server availability
+MAX_RETRIES = 3
+DEFAULT_BACKOFF_SECONDS = 3.0
 
 
-def _is_rate_limited(err_str: str) -> bool:
-    """Check if an error string indicates a rate-limit / quota exhaustion."""
-    return "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower()
+def _is_transient_error(err_str: str) -> bool:
+    """Check if an error string indicates a rate-limit, quota exhaustion, 503 unavailable, or temporary server overload."""
+    err_lower = err_str.lower()
+    keywords = [
+        "429", "resource_exhausted", "quota",
+        "503", "unavailable", "high demand", "spikes in demand",
+        "overloaded", "500", "502", "504", "deadline_exceeded",
+        "temporarily unavailable", "try again later"
+    ]
+    return any(kw in err_lower for kw in keywords)
 
 
 def _parse_retry_delay(err_str: str) -> float:
     """Try to extract the server-suggested wait time from the error message.
     Falls back to DEFAULT_BACKOFF_SECONDS if not parseable."""
-    # Matches patterns like "retry in 31s" or "Please retry in 45s"
     match = re.search(r"retry\s+in\s+(\d+)\s*s", err_str, re.IGNORECASE)
     if match:
-        return float(match.group(1)) + 2.0  # add a small buffer
+        return float(match.group(1)) + 1.5
     return DEFAULT_BACKOFF_SECONDS
 
 
@@ -74,75 +80,88 @@ class GeminiClient:
             logger.error(f"Failed to initialize Gemini Client: {e}")
             self.client = None
 
+    def _get_candidate_models(self) -> list[str]:
+        models = [self.model_name, "gemini-3.6-flash", "gemini-2.5-flash"]
+        candidates = []
+        for m in models:
+            if m and m not in candidates:
+                candidates.append(m)
+        return candidates
+
     def generate_json(self, prompt_or_contents, schema_class=None) -> dict:
         """
         Sends a prompt or list of contents to Gemini requesting a JSON output.
-        Optionally takes a Pydantic schema class to enforce structure.
+        Retries on transient 503/429 errors and falls back to alternate models.
         """
         if not self.client:
             raise ValueError("Gemini Client is not initialized. Please check API keys.")
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                config_args = {"response_mime_type": "application/json"}
-                if schema_class:
-                    config_args["response_schema"] = schema_class
+        candidate_models = self._get_candidate_models()
+        last_exception = None
 
-                config = types.GenerateContentConfig(**config_args)
-                
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt_or_contents,
-                    config=config
-                )
-                
-                text = response.text.strip()
-                # Clean possible markdown wrapping
-                if text.startswith("```json"):
-                     text = text[7:]
-                if text.endswith("```"):
-                     text = text[:-3]
-                text = text.strip()
-                
-                return json.loads(text)
-            except Exception as e:
-                err_str = str(e)
+        for model in candidate_models:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    config_args = {"response_mime_type": "application/json"}
+                    if schema_class:
+                        config_args["response_schema"] = schema_class
 
-                if _is_rate_limited(err_str) and attempt < MAX_RETRIES - 1:
-                    wait = _parse_retry_delay(err_str)
-                    logger.warning(
-                        f"Rate limited by Gemini (attempt {attempt+1}/{MAX_RETRIES}). "
-                        f"Waiting {wait:.0f}s before retry..."
+                    config = types.GenerateContentConfig(**config_args)
+                    
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=prompt_or_contents,
+                        config=config
                     )
-                    time.sleep(wait)
-                    continue
-                
-                logger.error(f"Error during Gemini JSON generation on attempt {attempt+1}: {e}")
-                
-                # Only attempt the unstructured fallback for NON-rate-limit errors,
-                # otherwise we'd burn another quota slot for nothing.
-                if not _is_rate_limited(err_str):
-                    try:
-                        if isinstance(prompt_or_contents, list):
-                            fallback_contents = prompt_or_contents + [" (Respond ONLY with a valid JSON block)"]
-                        else:
-                            fallback_contents = str(prompt_or_contents) + " (Respond ONLY with a valid JSON block)"
-                            
-                        response = self.client.models.generate_content(
-                            model=self.model_name,
-                            contents=fallback_contents
-                        )
-                        text = response.text.strip()
-                        if text.startswith("```json"):
-                            text = text[7:]
-                        if text.endswith("```"):
-                            text = text[:-3]
-                        text = text.strip()
-                        return json.loads(text)
-                    except Exception as fallback_err:
-                        logger.error(f"Fallback generation also failed: {fallback_err}")
+                    
+                    text = response.text.strip()
+                    if text.startswith("```json"):
+                        text = text[7:]
+                    if text.endswith("```"):
+                        text = text[:-3]
+                    text = text.strip()
+                    
+                    return json.loads(text)
+                except Exception as e:
+                    last_exception = e
+                    err_str = str(e)
 
-                raise e
+                    if _is_transient_error(err_str) and attempt < MAX_RETRIES - 1:
+                        wait = _parse_retry_delay(err_str)
+                        logger.warning(
+                            f"Transient error on model '{model}' (attempt {attempt+1}/{MAX_RETRIES}): {e}. "
+                            f"Retrying in {wait:.1f}s..."
+                        )
+                        time.sleep(wait)
+                        continue
+                    elif _is_transient_error(err_str):
+                        logger.warning(f"Model '{model}' exhausted retries due to transient error. Trying next fallback model...")
+                        break
+                    else:
+                        # Non-transient error: attempt fallback without schema config
+                        try:
+                            if isinstance(prompt_or_contents, list):
+                                fallback_contents = prompt_or_contents + [" (Respond ONLY with a valid JSON block)"]
+                            else:
+                                fallback_contents = str(prompt_or_contents) + " (Respond ONLY with a valid JSON block)"
+                                
+                            response = self.client.models.generate_content(
+                                model=model,
+                                contents=fallback_contents
+                            )
+                            text = response.text.strip()
+                            if text.startswith("```json"):
+                                text = text[7:]
+                            if text.endswith("```"):
+                                text = text[:-3]
+                            text = text.strip()
+                            return json.loads(text)
+                        except Exception as fallback_err:
+                            logger.error(f"Fallback generation failed: {fallback_err}")
+                        raise e
+
+        if last_exception:
+            raise last_exception
 
     def generate(self, prompt: str) -> str:
         """
@@ -151,25 +170,36 @@ class GeminiClient:
         if not self.client:
             raise ValueError("Gemini Client is not initialized. Please check API keys.")
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt
-                )
-                return response.text.strip()
-            except Exception as e:
-                err_str = str(e)
-                if _is_rate_limited(err_str) and attempt < MAX_RETRIES - 1:
-                    wait = _parse_retry_delay(err_str)
-                    logger.warning(
-                        f"Rate limited by Gemini (attempt {attempt+1}/{MAX_RETRIES}). "
-                        f"Waiting {wait:.0f}s before retry..."
+        candidate_models = self._get_candidate_models()
+        last_exception = None
+
+        for model in candidate_models:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=prompt
                     )
-                    time.sleep(wait)
-                    continue
-                logger.error(f"Error during Gemini generation: {e}")
-                raise e
+                    return response.text.strip()
+                except Exception as e:
+                    last_exception = e
+                    err_str = str(e)
+                    if _is_transient_error(err_str) and attempt < MAX_RETRIES - 1:
+                        wait = _parse_retry_delay(err_str)
+                        logger.warning(
+                            f"Transient error on model '{model}' (attempt {attempt+1}/{MAX_RETRIES}): {e}. "
+                            f"Retrying in {wait:.1f}s..."
+                        )
+                        time.sleep(wait)
+                        continue
+                    elif _is_transient_error(err_str):
+                        logger.warning(f"Model '{model}' failed. Trying next model...")
+                        break
+                    else:
+                        raise e
+
+        if last_exception:
+            raise last_exception
 
 # Single shared instance
 gemini_client = GeminiClient()
