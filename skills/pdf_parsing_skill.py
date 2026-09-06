@@ -7,6 +7,28 @@ from utils.gemini_client import gemini_client
 
 logger = logging.getLogger(__name__)
 
+def optimize_image_bytes(file_bytes: bytes, default_mime: str = "image/jpeg", max_dim: int = 1600) -> tuple[bytes, str]:
+    """Optimizes image payload for Gemini Vision: resizes large screenshots/photos to max_dim and compresses to JPEG."""
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(io.BytesIO(file_bytes))
+        img = ImageOps.exif_transpose(img)
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+        
+        w, h = img.size
+        if max(w, h) > max_dim:
+            scale = max_dim / float(max(w, h))
+            new_w, new_h = int(w * scale), int(h * scale)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85, optimize=True)
+        return buffer.getvalue(), "image/jpeg"
+    except Exception as e:
+        logger.warning(f"Could not optimize image payload: {e}")
+        return file_bytes, default_mime
+
 def parse_pdf(file_bytes: bytes, context: str = "") -> list[dict]:
     """
     Skill 2: Extract text from bank PDF using pdfplumber,
@@ -208,8 +230,11 @@ Das Format muss exakt so aussehen:
 ]
 """
     
+    # Optimize image payload for Gemini Vision (resizes large screenshots & converts to lightweight JPEG)
+    opt_bytes, opt_mime = optimize_image_bytes(file_bytes, default_mime=mime_type)
+    
     contents = [
-        types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+        types.Part.from_bytes(data=opt_bytes, mime_type=opt_mime),
         prompt
     ]
     
@@ -224,6 +249,9 @@ Das Format muss exakt so aussehen:
                 extracted_txs = []
     except Exception as e:
         logger.error(f"Error parsing image transactions with Gemini: {e}")
+        err_msg = str(e)
+        if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+            raise ValueError("Der Google Gemini KI-Server ist aktuell sehr stark ausgelastet (503 High Demand). Bitte warte ca. 10–15 Sekunden und klicke erneut auf 'Dokument analysieren'.")
         raise ValueError(f"Gemini konnte das Bild nicht parsen: {str(e)}")
         
     # Post-process: apply static rules as overrides (no extra API calls)

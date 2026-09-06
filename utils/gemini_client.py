@@ -22,7 +22,7 @@ os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "False")
 logger = logging.getLogger(__name__)
 
 # Retry settings for rate limits and server availability
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 DEFAULT_BACKOFF_SECONDS = 3.0
 
 
@@ -38,13 +38,13 @@ def _is_transient_error(err_str: str) -> bool:
     return any(kw in err_lower for kw in keywords)
 
 
-def _parse_retry_delay(err_str: str) -> float:
+def _parse_retry_delay(err_str: str, attempt: int = 0) -> float:
     """Try to extract the server-suggested wait time from the error message.
-    Falls back to DEFAULT_BACKOFF_SECONDS if not parseable."""
+    Falls back to exponential backoff if not parseable."""
     match = re.search(r"retry\s+in\s+(\d+)\s*s", err_str, re.IGNORECASE)
     if match:
         return float(match.group(1)) + 1.5
-    return DEFAULT_BACKOFF_SECONDS
+    return min(DEFAULT_BACKOFF_SECONDS * (1.8 ** attempt), 12.0)
 
 
 class GeminiClient:
@@ -127,7 +127,7 @@ class GeminiClient:
                     err_str = str(e)
 
                     if _is_transient_error(err_str) and attempt < MAX_RETRIES - 1:
-                        wait = _parse_retry_delay(err_str)
+                        wait = _parse_retry_delay(err_str, attempt=attempt)
                         logger.warning(
                             f"Transient error on model '{model}' (attempt {attempt+1}/{MAX_RETRIES}): {e}. "
                             f"Retrying in {wait:.1f}s..."
@@ -185,7 +185,7 @@ class GeminiClient:
                     last_exception = e
                     err_str = str(e)
                     if _is_transient_error(err_str) and attempt < MAX_RETRIES - 1:
-                        wait = _parse_retry_delay(err_str)
+                        wait = _parse_retry_delay(err_str, attempt=attempt)
                         logger.warning(
                             f"Transient error on model '{model}' (attempt {attempt+1}/{MAX_RETRIES}): {e}. "
                             f"Retrying in {wait:.1f}s..."
